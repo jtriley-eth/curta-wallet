@@ -8,6 +8,25 @@ import "./Constants.sol";
 /// @title Curta Wallet
 /// @author jtriley.eth
 /// @dev two-step transfer smart wallet for cheap curta challenge solving.
+///                     __
+///               _____| ||
+///              |  _____||
+///              |  ||
+///      ________|__||_______
+///     |                   ||
+///     |###################||
+///     |___________________||
+///      \_________________//
+///       | 1 0 0 0 1 0 1 ||
+///       | | # # # | # | ||
+///       | # | | | # | # ||
+///       | | | | | | | | ||
+///       |_______________||
+///      /_________________\\
+///     |                   ||
+///     |###################||
+///     |___________________||
+///
 contract CurtaWallet is TwoStepOwned {
     struct Call {
         uint256 gas;
