@@ -1,9 +1,13 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.22;
 
-import {ICurta} from "./interfaces/ICurta.sol";
+import {ICurta, IPuzzle} from "./interfaces/ICurta.sol";
 import {TwoStepOwned} from "./TwoStepOwned.sol";
+import "./Constants.sol";
 
+/// @title Curta Wallet
+/// @author jtriley.eth
+/// @dev two-step transfer smart wallet for cheap curta challenge solving.
 contract CurtaWallet is TwoStepOwned {
     struct Call {
         uint256 gas;
@@ -12,98 +16,162 @@ contract CurtaWallet is TwoStepOwned {
         bytes payload;
     }
 
+    /// @dev logged when customFallback is set.
+    /// @param previous Previous custom fallback.
+    /// @param next Next custom fallback.
+    event SetCustomFallback(address indexed previous, address indexed next);
+
+    /// @dev thrown when a call fails that is not allowed to fail.
     error CallFail();
 
-    ICurta internal constant curta = ICurta(address(0));
-
+    /// @dev calls the Curta.solve method with direct inputs. throws if Curta.solve reverts or if
+    ///      the caller is not the owner.
+    /// @param puzzleId id of the puzzle.
+    /// @param solution solution value to the puzzle.
     function solve(uint32 puzzleId, uint256 solution) public payable onlyOwner {
         assembly {
-            mstore(0x00, shl(0xe0, 0x31468f06))
-            mstore(0x04, puzzleId)
-            mstore(0x24, solution)
-            if iszero(call(gas(), curta, 0x00, 0x44, 0x00, 0x00)) {
-                mstore(0x00, shl(0xe0, 0x12fcf496))
-                return(0x00, 0x04)         
+            mstore(SELECTOR_PTR, shl(SELECTOR_SHIFT, SOLVE_SELECTOR))
+            mstore(ARG0_PTR, puzzleId)
+            mstore(ARG1_PTR, solution)
+            if iszero(
+                call(
+                    gas(),
+                    CURTA,
+                    callvalue(),
+                    SOLVE_ARG_PTR,
+                    SOLVE_ARG_LEN,
+                    SOLVE_RET_PTR,
+                    SOLVE_RET_LEN
+                )
+            ) {
+                mstore(CALL_FAIL_PTR, shl(SELECTOR_SHIFT, CALL_FAIL_SELECTOR))
+                return(CALL_FAIL_PTR, CALL_FAIL_LEN)         
             }
         }
     }
 
+    /// @dev calls a bundle of external calls with explicit gas and callvalues, then calls
+    ///      Curta.solve. throws if Curta.solve reverts, the caller is not the owner, or if any call
+    ///      reverts AND the throwOnFail variable is set to true.
+    /// @dev explicit gas and callvalue enables challenges relying on these values, the throwOnFail
+    ///      value enables challenges that rely on intermediate failures.
+    /// @param throwOnFail true if any call failure should throw.
+    /// @param puzzleId id of the puzzle.
+    /// @param solution solution of the puzzle.
     function multiStepSolve(
-        Call[] calldata calls,
+        Call[] calldata,
+        bool throwOnFail,
         uint32 puzzleId,
-        uint256 solution,
-        bool throwOnFail
+        uint256 solution
     ) public payable onlyOwner {
         assembly {
-            let callsLeft := calldataload(0x84)
-            let callOffsetPtr := 0xa4
+            let balanceBefore := selfbalance()
+            let callsLeft := calldataload(CALLS_LEFT_CD_PTR)
+            let callOffsetPtr := CALL_STRUCT_OFFSET_CD_PTR
             let anyFails
 
             for {} 1 {} {
-                if iszero(callsLeft) { break; }
+                if iszero(callsLeft) { break }
 
-                let callData := add(callOffsetPtr, calldataload(callOffsetPtr))
-                let payloadLen := calldataload(add(callData, 0x80))
+                let callStruct := add(callOffsetPtr, calldataload(callOffsetPtr))
+                let payloadLen := calldataload(add(callStruct, CALL_STRUCT_PAYLOAD_LEN_OFFSET))
 
-                calldatacopy(0x00, add(callData, 0xa0), payloadLen)
+                calldatacopy(CALL_ARG_PTR, add(callStruct, CALL_STRUCT_PAYLOAD_START_OFFSET), payloadLen)
                 anyFails := or(
                     anyFails,
                     iszero(
                         call(
-                            calldataload(callData),
-                            calldataload(add(callData, 0x20))
-                            calldataload(add(callData, 0x40))
-                            0x00,
+                            calldataload(callStruct),
+                            calldataload(add(callStruct, CALL_STRUCT_TARGET_OFFSET)),
+                            calldataload(add(callStruct, CALL_STRUCT_VALUE_OFFSET)),
+                            CALL_ARG_PTR,
                             payloadLen,
-                            0x00,
-                            0x00
+                            CALL_RET_PTR,
+                            CALL_RET_LEN
                         )
                     )
                 )
 
-                callsLeft := sub(callsLeft, 1)
-                callOffsetPtr := add(callOffsetPtr, 0x20)
+                callsLeft := sub(callsLeft, CALLS_LEFT_DECREMENT)
+                callOffsetPtr := add(callOffsetPtr, CALL_STRUCT_OFFSET_CD_PTR_INCREMENT)
             }
 
-            mstore(0x00, shl(0xe0, 0x31468f06))
-            mstore(0x04, puzzleId)
-            mstore(0x24, solution)
-            anyFails := or(anyFails, iszero(call(gas(), curta, 0x00, 0x44, 0x00, 0x00)))
-
-            if and(throwOnFail, anyFails) {
-                mstore(0x00, shl(0xe0, 0x12fcf496))
-                return(0x00, 0x04)
+            mstore(SELECTOR_PTR, shl(SELECTOR_SHIFT, SOLVE_SELECTOR))
+            mstore(ARG0_PTR, puzzleId)
+            mstore(ARG1_PTR, solution)
+            if or(
+                iszero(
+                    call(
+                        gas(),
+                        CURTA,
+                        callvalue(),
+                        SOLVE_ARG_PTR,
+                        SOLVE_ARG_LEN,
+                        SOLVE_RET_PTR,
+                        SOLVE_RET_LEN
+                    )
+                ),
+                and(throwOnFail, anyFails)
+             ) {
+                mstore(CALL_FAIL_PTR, shl(SELECTOR_SHIFT, CALL_FAIL_SELECTOR))
+                revert(CALL_FAIL_PTR, CALL_FAIL_LEN)
             }
         }
     }
 
+    /// @dev sets custom fallback address, bc someone, somewhere, is going to use this wallet, and
+    ///      someone else, somewhere else, is going to make a cheeky little challenge that tries to
+    ///      force you to do some kind of custom execution in the fallback. and when that day comes,
+    ///      that someone, somewhere, is going to be thankful they have this on hand. unless, of
+    ///      course, that someone else, somewhere else, is aware that this requires a storage load
+    ///      followed by a delegatecall and restricts the gas to this step to an amount less than a
+    ///      cold storage load and cold delegatecall. and if that is the case there is nothing i can
+    ///      do to help you. godspeed, someone, somewhere, and someone else, somewhere else. i hope
+    ///      one day you can make amends.
+    /// @dev throws if caller is not the owner.
+    /// @dev dev. DEV. yes. you. do not. and i mean DO NOT. use an address with untrusted code.
+    /// @param nextCustomFallback next custom fallback address.
+    function setCustomFallback(address nextCustomFallback) public onlyOwner {
+        assembly {
+            let previousCustomFallback := sload(CUSTOM_FALLBACK_SLOT)
+            sstore(CUSTOM_FALLBACK_SLOT, nextCustomFallback)
+            log3(
+                CUSTOM_FALLBACK_EVENT_PTR,
+                CUSTOM_FALLBACK_EVENT_LEN,
+                CUSTOM_FALLBACK_EVENT_HASH,
+                previousCustomFallback,
+                nextCustomFallback
+            )
+        }
+    }
+
+    /// @dev 
     receive() external payable {
         assembly {
-            mstore(0, shr(252, calldataload(0)))
-            return(0, 32)
+            let customFallback := sload(CUSTOM_FALLBACK_SLOT)
+            if iszero(customFallback) {
+                mstore(
+                    FALLBACK_SELECTOR_PTR,
+                    shr(SELECTOR_SHIFT, calldataload(FALLBACK_SELECTOR_CD_PTR))
+                )
+                return(FALLBACK_SELECTOR_PTR, FALLBACK_SELECTOR_LEN)
+            }
+
+            calldatacopy(FALLBACK_ARG_PTR, FALLBACK_SELECTOR_CD_PTR, calldatasize())
+            let success := delegatecall(
+                gas(),
+                customFallback,
+                FALLBACK_ARG_PTR,
+                calldatasize(),
+                FALLBACK_RET_PTR,
+                FALLBACK_RET_LEN
+            )
+            returndatacopy(FALLBACK_RET_PTR, FALLBACK_RET_PTR, returndatasize())
+
+            if success {
+                return(FALLBACK_RET_PTR, returndatasize())
+            }
+            revert(FALLBACK_RET_PTR, returndatasize())
         }
     }
 }
-
-/*
-0x0000 : 0xe0a996e2
-0x0004 : 0000000000000000000000000000000000000000000000000000000000000080    // calls_offset
-0x0024 : 0000000000000000000000000000000000000000000000000000000000000007    // puzzle_id
-0x0044 : 0000000000000000000000000000000000000000000000000000000000000008    // solution
-0x0064 : 0000000000000000000000000000000000000000000000000000000000000001    // throw_on_fail
-0x0084 : 0000000000000000000000000000000000000000000000000000000000000002    // calls_length
-0x00a4 : 0000000000000000000000000000000000000000000000000000000000000040    // calls_0_offset // asm { calls.offset }
-0x00c4 : 0000000000000000000000000000000000000000000000000000000000000100    // calls_1_offset
-0x00e4 : 0000000000000000000000000000000000000000000000000000000000000001    // calls_0_target // asm { calls[0] }
-0x0104 : 0000000000000000000000000000000000000000000000000000000000000002    // calls_0_value
-0x0124 : 0000000000000000000000000000000000000000000000000000000000000003    // calls_0_gas
-0x0144 : 0000000000000000000000000000000000000000000000000000000000000080    // calls_0_payload_offset
-0x0164 : 0000000000000000000000000000000000000000000000000000000000000004    // calls_0_payload_length
-0x0184 : aabbccdd00000000000000000000000000000000000000000000000000000000    // calls_0_payload_start
-0x01a4 : 0000000000000000000000000000000000000000000000000000000000000004    // calls_1_target // asm { calls[1] }
-0x01c4 : 0000000000000000000000000000000000000000000000000000000000000005    // calls_1_value
-0x01e4 : 0000000000000000000000000000000000000000000000000000000000000006    // calls_1_gas
-0x0204 : 0000000000000000000000000000000000000000000000000000000000000080    // calls_1_payload_offset
-0x0224 : 0000000000000000000000000000000000000000000000000000000000000004    // calls_1_payload_length
-0x0244 : eeffaabb00000000000000000000000000000000000000000000000000000000    // calls_1_payload_start
-*/
